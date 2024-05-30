@@ -12,7 +12,7 @@ python -m pip install nvidia-pyindex
 python -m pip install -r requirements.txt
 ```
 
-# Quickstart - Our quickstart tutorial will be coming soon!
+# Quickstart
 
 # Meta-training Quickstart
 ```
