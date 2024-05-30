@@ -1,4 +1,4 @@
-# Welcome to Learned Aggregation!
+# Welcome to $\mu$ Learned Optimization!
 
 # Installation
 
@@ -12,35 +12,101 @@ python -m pip install nvidia-pyindex
 python -m pip install -r requirements.txt
 ```
 
-# Quickstart
+# Quickstart - Our quickstart tutorial will be coming soon!
 
-As a quickstart tutorial, we will replicate the experiments at different H values from the paper for the LAgg-A model.
+# Meta-training Quickstart
+```
+CUDA_VISIBLE_DEVICES=0 python src/main.py \
+--config config/meta_train/schedules/mxlr=3e-3_mnlr=1e-3_it=5000_clip.py \
+--num_tasks 8 \
+--local_batch_size 4096 \
+--train_project mup-meta-training \
+--optimizer mup_small_fc_mlp \
+--needs_state \
+--steps_per_jit 2 \
+--name_suffix _s-mumlp_it=5000_mxlr=3e-3_stepm=01_tasks=8 \
+--task mumlp-w128-d3_imagenet-32x32x3 \
+--prefetch_batches 20 \
+--adafac_step_mult 0.01
 
-### H=4, K=8
-```
-python src/main.py \
---config config/meta_train/meta_train_fedlagg-adafac32_image-mlp-fmst_schedule_3e-3_10000_d3:1.py \
---num_local_steps 4 --num_grads 8 \
---optimizer fedlagg-adafac \
---local_learning_rate 0.5
-```
-
-### H=8, K=8
-```
-python src/main.py \
---config config/meta_train/meta_train_fedlagg-adafac32_image-mlp-fmst_schedule_3e-3_10000_d3:1.py \
---num_local_steps 8 --num_grads 8 \
---optimizer fedlagg-adafac \
---local_learning_rate 0.5
+CUDA_VISIBLE_DEVICES=0 python src/main.py \
+--config config/meta_train/schedules/mxlr=3e-3_mnlr=1e-3_it=5000_clip.py \
+--num_tasks 8 \
+--local_batch_size 4096 \
+--train_project mup-meta-training \
+--optimizer mup_small_fc_mlp \
+--needs_state \
+--steps_per_jit 2 \
+--name_suffix _m-mumlp_it=5000_mxlr=3e-3_stepm=01_tasks=8 \
+--prefetch_batches 20 \
+--adafac_step_mult 0.01 \
+--task mumlp-w1024-d3_imagenet-32x32x3,mumlp-w512-d3_imagenet-32x32x3,mumlp-w128-d3_imagenet-32x32x3 \
+--auto_resume
 ```
 
-### H=16, K=8
+
+
+
+# Testing Quickstart
+
+
+## Test VeLO
 ```
-python src/main.py \
---config config/meta_train/meta_train_fedlagg-adafac32_image-mlp-fmst_schedule_3e-3_10000_d3:1.py \
---num_local_steps 4 --num_grads 8 \
---optimizer fedlagg-adafac \
---local_learning_rate 0.5
+CUDA_VISIBLE_DEVICES=0 python src/main.py \
+--config config/meta_test/image-mlp-fmst_fedlagg-adafac.py \
+--name_suffix _m_mup_final \
+--local_batch_size 128 \
+--test_project mup-meta-testing \
+--task mutransformer-w2048-d3_lm1b-s64-v32k \
+--optimizer mup_small_fc_mlp \
+--wandb_checkpoint_id eb-lab/mup-meta-training/woz3g9l0 \
+--num_runs 5 \
+--num_inner_steps 5000 \
+--needs_state \
+--adafac_step_mult 0.01 \
+--gradient_accumulation_steps 1 \
+--test_interval 100
+```
+
+## Test MuLO
+```
+CUDA_VISIBLE_DEVICES=0 python src/main.py \
+--config config/meta_test/image-mlp-fmst_fedlagg-adafac.py \
+--name_suffix _m_mup_final \
+--local_batch_size 128 \
+--test_project mup-meta-testing \
+--task mutransformer-w2048-d3_lm1b-s64-v32k \
+--optimizer mup_small_fc_mlp \
+--wandb_checkpoint_id <WANDB PATH TO CHECKPOINT> \
+--num_runs 5 \
+--num_inner_steps 5000 \
+--needs_state \
+--adafac_step_mult 0.01 \
+--gradient_accumulation_steps 1 \
+--test_interval 100 \
+--use_bf16
+```
+
+## Sweep MuAdam Leerning Rates
+```
+CUDA_VISIBLE_DEVICES=0 python src/main.py \
+    --config config/sweeps/sweep_muadam.py \
+    --name_suffix _muadam_sweep \
+    --local_batch_size 4096 \
+    --test_project mup-meta-testing \
+    --task "mumlp-w1024-d3_imagenet-32x32x3" \
+    --optimizer muadam \
+    --num_runs 1 \
+    --learning_rate 3e-4 \
+    --num_inner_steps 1000 \
+    --gradient_accumulation_steps 1 \
+    --needs_state \
+    --mup_input_mult 1 \
+    --mup_output_mult 1 \
+    --mup_hidden_lr_mult 1 \
+    --test_interval 50 \
+```
+
 ```
 
 # Config file structure
