@@ -1,152 +1,45 @@
-import pickle
 import os.path as osp
 from tqdm import tqdm
+import numpy as np
 import jax
 import wandb
 from learned_optimization import checkpoints
 
 from meta_trainers import get_meta_trainer
-
-from glob import glob
-import os
-import shutil
-import re
+import globals
 
 
-def natural_sort(l):
-    convert = lambda text: int(text) if text.isdigit() else text.lower()
-    alphanum_key = lambda key: [convert(c) for c in re.split("([0-9]+)", key)]
-    return sorted(l, key=alphanum_key)
-
-
-def delete_old_checkpoints(save_dir, n_to_keep):
-    ckpt_dir_regex = r"global_step[\d]*"
-    if save_dir.endswith("/"):
-        save_dir = save_dir.strip("/")
-    all_ckpts = natural_sort(
-        [
-            i
-            for i in glob(f"{save_dir}/*")
-            if i.endswith(".ckpt") and re.search(ckpt_dir_regex, i)
-        ]
-    )
-    all_pkl = natural_sort(
-        [
-            i
-            for i in glob(f"{save_dir}/*")
-            if i.endswith(".pickle") and re.search(ckpt_dir_regex, i)
-        ]
-    )
-
-    n_to_delete = len(all_ckpts) - n_to_keep
-    if n_to_delete > 0:
-        to_delete_ckpt = all_ckpts[:n_to_delete]
-        to_delete_pkl = all_pkl[:n_to_delete]
-        print(
-            f"WARNING: Deleting old checkpoints: \n\t{', '.join(to_delete_ckpt + to_delete_pkl)}"
-        )
-        for ckpt in to_delete_ckpt + to_delete_pkl:
-            try:
-                os.remove(ckpt)
-            except FileNotFoundError:
-                pass
-
-
-def save_checkpoint(
-    prefix, i, args, outer_trainer_state
-):  # Checkpoint every 1000th iteration
-    save_dir = osp.join("checkpoints", prefix + args.meta_train_name)
-    checkpoints.save_state(
-        osp.join(
-            save_dir,
-            "global_step{}.ckpt".format(i + 1),
-        ),
-        outer_trainer_state,
-    )
-    pickle_filename = osp.join(
-        save_dir,
-        "global_step{}.pickle".format(i + 1),
-    )
-    with open(
-        pickle_filename,
-        "wb",
-    ) as f:
-        pickle.dump(
-            outer_trainer_state.gradient_learner_state.theta_opt_state.params, f
-        )
-
-    with open(osp.join(save_dir, "latest"), "w") as f:
-        f.write("global_step{}".format(i + 1))
-
-    delete_old_checkpoints(
-        save_dir=save_dir,
-        n_to_keep=args.checkpoints_to_keep,
-    )
-
-    return pickle_filename
-
-
-def get_ckpt_dirs(ckpt_dir, meta_train_name):
-    a = os.listdir(ckpt_dir)
-    keep = []
-    for x in a:
-        if osp.isdir(osp.join(ckpt_dir, x)) and x[8:] == meta_train_name:
-            keep.append(x)
-    return keep
-
-
-def get_ckpt_to_load(ckpt_dir, dirs):
-    def nat_sort(l):
-        convert = lambda text: int(text) if text.isdigit() else text.lower()
-        alphanum_key = lambda key: [convert(c) for c in re.split("([0-9]+)", key[1])]
-        return sorted(l, key=alphanum_key)
-
-    sortable = []
-    for x in dirs:
-        if osp.isfile(osp.join(ckpt_dir, x, "latest")):
-            ckpt = open(osp.join(ckpt_dir, x, "latest"), "r").readline().strip()
-            sortable.append(
-                (
-                    osp.join(ckpt_dir, x, ckpt),
-                    ckpt,
-                )
-            )
-    sortable = nat_sort(sortable)
-
-    keep = []
-    for x in sortable:
-        if x[1] == sortable[-1][1]:
-            keep.append(x)
-    if len(keep) > 1:
-        print(
-            "[Warning] multiple directories contain a checkpoint at the same latest iteration. Selecting one arbitrarily."
-        )
-
-    return keep[0]
-
-
-def get_resume_ckpt(ckpt_dir, meta_train_name):
-    dirs = get_ckpt_dirs(ckpt_dir, meta_train_name)
-    if len(dirs) == 0:
-        print("[Info] No existing checkpoint found. Starting from scratch.")
-        return None
-    ckpt_path, suffix = get_ckpt_to_load(ckpt_dir, dirs)
-    print("[Info] Loading checkpoint from {}".format(ckpt_path))
-    return ckpt_path
-
+from helpers import get_resume_ckpt, save_checkpoint, set_non_hashable_args
 
 def meta_train(args):
+    args = set_non_hashable_args(args)
     meta_trainer, meta_opt = get_meta_trainer(args)
 
     key = jax.random.PRNGKey(0)
     key, key1 = jax.random.split(key)
     outer_trainer_state = meta_trainer.init(key1)
 
+    globals.needs_state = args.needs_state
+    globals.num_grads = args.num_grads
+    globals.num_local_steps = args.num_local_steps
+    globals.local_batch_size = args.local_batch_size
+    globals.use_pmap = args.use_pmap
+    globals.num_devices = args.num_devices
+
+    if args.use_pmap:
+        assert args.num_grads % args.num_devices == 0, "The number of devices for parallelism should be a divisor of the number of clients (gradients)"
+
+    run = None
     if args.from_checkpoint:
         dirname = osp.join("checkpoints", args.meta_train_name)
         ckpt = open(osp.join(dirname, "latest"), "r").readline().strip()
         outer_trainer_state = checkpoints.load_state(
             osp.join(dirname, "{}.ckpt".format(ckpt)), outer_trainer_state
+        )
+        run = wandb.init(
+            project=args.train_project,
+            group=args.meta_train_name,
+            config=vars(args),
         )
     elif args.auto_resume:
         ckpt = get_resume_ckpt("checkpoints", args.meta_train_name)
@@ -154,31 +47,50 @@ def meta_train(args):
             outer_trainer_state = checkpoints.load_state(
                 "{}.ckpt".format(ckpt), outer_trainer_state
             )
+            run = wandb.init(
+                project=args.train_project,
+                group=args.meta_train_name,
+                config=vars(args),
+                resume='must',
+                id=ckpt.split('/')[1][:8]
+            )
+    
+    if run == None:
+        run = wandb.init(
+            project=args.train_project,
+            group=args.meta_train_name,
+            config=vars(args),
+        )
 
-    run = wandb.init(
-        project="learned_aggregation_meta_train",
-        group=args.meta_train_name,
-        config=vars(args),
-    )
+    # import pdb
+    # pdb.set_trace()
+    # outer_trainer_state.gradient_estimator_states[0].pos_state.inner_opt_state.state
 
     iteration = int(
         outer_trainer_state.gradient_learner_state.theta_opt_state.iteration
     )
-    for i in tqdm(
+    pbar = tqdm(
         range(iteration, args.num_outer_steps),
         initial=iteration,
         total=args.num_outer_steps,
         ascii=True,
         desc="Outer Loop",
-    ):
+    )
+    logging_task_name = args.task[0] if len(args.task) == 1 else "multi-task-with_" + args.task[0]
+    for i in pbar:
         key, key1 = jax.random.split(key)
         outer_trainer_state, meta_loss, metrics = meta_trainer.update(
             outer_trainer_state, key1, with_metrics=True
         )
 
+        pbar.set_postfix({
+            "Data time":round(np.mean(meta_trainer.gradient_estimators[0].truncated_step.timings[-50 // args.steps_per_jit:]),7),
+            "meta loss":round(float(meta_loss),2)
+        })
+
         more_to_log = {
                 "iteration": i,
-                args.task + " meta loss": meta_loss,
+                logging_task_name + " meta loss": meta_loss,
                 "learning rate": meta_opt.__dict__.get(
                     "schedule_", lambda x: args.learning_rate
                 )(

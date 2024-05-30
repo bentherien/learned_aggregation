@@ -71,6 +71,7 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
         fac_vec_row,
         fac_vec_v,
         gs,
+        avg_g,
     ):
         # this doesn't work with scalar parameters, so instead lets just reshape.
         if not p.shape:
@@ -78,6 +79,7 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
             g_list = []
             for g in gs:
                 g_list.append(jnp.expand_dims(g, 0))
+            avg_g = jnp.expand_dims(avg_g, 0)
             m = jnp.expand_dims(m, 0)
             rms = jnp.expand_dims(rms, 0)
             fac_g = jnp.expand_dims(fac_g, 0)
@@ -90,8 +92,6 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
             did_reshape = False
 
         inps = []
-
-        avg_g = jnp.mean(gs, axis=0)
 
         if self._with_avg:
             batch_avg_g = jnp.expand_dims(avg_g, axis=-1)
@@ -345,6 +345,7 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
         c = 10
         p = jnp.ones([r, c])
         g = jnp.ones([self._num_grads, r, c])
+        avg_g = jnp.ones([r, c])
 
         m = jnp.ones([r, c, len(self._initial_momentum_decays)])
         rms = jnp.ones([r, c, len(self._initial_rms_decays)])
@@ -364,6 +365,7 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
             fac_vec_row,
             fac_vec_v,
             g,
+            avg_g,
         )
         return hk.data_structures.to_haiku_dict(
             {
@@ -429,20 +431,18 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
                     num_steps=jnp.asarray(num_steps),
                 )
 
+            @functools.partial(jax.jit, static_argnums=0)
             def update(
                 self,
                 opt_state: AdafacMLPLOptState,
                 grads,
+                avg_grad,
                 loss: jnp.ndarray,
                 model_state: Optional[opt_base.ModelState] = None,
                 is_valid: bool = False,
                 key: Optional[PRNGKey] = None,
             ) -> AdafacMLPLOptState:
-                # TODO Make sure we geed the correct number of grads
-
-                avg_grad = jax.tree_util.tree_map(
-                    lambda gs: jnp.mean(gs, axis=0), grads
-                )
+                # TODO Make sure we get the correct number of grads
 
                 mom_roll, rms_roll, fac_vec_roll = self._get_rolling()
                 next_mom_rolling = mom_roll.update(opt_state.mom_rolling, avg_grad)
@@ -472,6 +472,7 @@ class FedAdafacMLPLOpt(lopt_base.LearnedOptimizer):
                     next_fac_rolling_features.v_row,
                     next_fac_rolling_features.v_diag,
                     grads,
+                    avg_grad,
                 )
 
                 next_opt_state = AdafacMLPLOptState(
